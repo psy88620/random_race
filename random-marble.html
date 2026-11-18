@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>랜덤 구슬 레이스</title>
+<script>if(/[#&]auto=1/.test(location.hash))document.documentElement.classList.add('auto')</script>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,'Malgun Gothic',sans-serif;color:#fff;background:#1b1340}
+canvas{display:block;position:fixed;inset:0;width:100%;height:100%}
+.panel{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1b1340ee;z-index:5;padding:16px;overflow:auto}
+.panel[hidden]{display:none}
+h1{font-size:clamp(28px,5vw,48px);margin:8px 0;text-shadow:0 4px 0 #ff3d81}
+textarea{width:min(520px,100%);height:200px;border-radius:12px;border:0;padding:12px;font-size:18px}
+.row{display:flex;gap:12px;align-items:center;justify-content:center;margin:10px 0;flex-wrap:wrap;font-size:20px}
+input[type=number]{width:80px;font-size:20px;padding:6px;border-radius:8px;border:0}
+select{font-size:20px;padding:6px;border-radius:8px}
+button{font-size:22px;font-weight:800;padding:12px 28px;border:0;border-radius:40px;background:#ffd23f;color:#3a1f00;cursor:pointer;box-shadow:0 5px 0 #c99a00}
+button.sm{font-size:16px;padding:6px 16px;box-shadow:0 3px 0 #c99a00}
+button:active{transform:translateY(4px);box-shadow:0 1px 0 #c99a00}
+#stopBtn{position:fixed;top:12px;right:12px;z-index:6;font-size:18px;padding:8px 20px;background:#ff5d5d;color:#fff;box-shadow:0 4px 0 #b02a2a}
+#feed{position:fixed;top:12px;left:0;right:0;text-align:center;font-size:clamp(20px,3vw,32px);font-weight:900;text-shadow:0 2px 6px #000;z-index:4;pointer-events:none}
+#rank{position:fixed;top:60px;right:12px;z-index:4;background:#000a;border-radius:14px;padding:8px 14px;font-size:18px;font-weight:700;min-width:150px;pointer-events:none}
+#rank div{white-space:nowrap}
+#count{position:fixed;inset:0;display:none;align-items:center;justify-content:center;font-size:30vw;font-weight:900;color:#ffd23f;text-shadow:0 8px 0 #ff3d81;pointer-events:none;z-index:9}
+.win{display:flex;align-items:center;gap:12px;background:#ffffff22;border-radius:14px;margin:8px auto;padding:10px 18px;width:min(520px,100%);font-size:24px;font-weight:800}
+.win.top{background:linear-gradient(90deg,#ffd23f,#ff9f1c);color:#3a1f00}
+.win b{margin-left:auto}
+html.auto #setup{display:none!important}
+html.auto body::before{content:'불러오는 중…';position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;color:#fff;text-shadow:0 2px 6px #000;z-index:4}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="feed"></div>
+<div id="rank" hidden></div>
+<div id="count"></div>
+<button id="stopBtn" hidden onclick="abort()">⏹ 중단</button>
+
+<div class="panel" id="setup">
+  <h1>🔮 랜덤 구슬 레이스 🔮</h1>
+  <p>참가자 이름을 한 줄에 하나씩 입력하세요 (최대 100명)</p>
+  <textarea id="names">민준
+서연
+지호
+하윤
+도윤
+수아
+예준
+지우</textarea>
+  <div class="row">테스트용 <input id="cnt" type="number" min="2" max="100" value="60">명 <button class="sm" onclick="fill()">이름 자동 채우기</button></div>
+  <div class="row">코스 길이
+    <select id="len">
+      <option value="6">짧게 (약 35초)</option>
+      <option value="10" selected>보통 (약 1분)</option>
+      <option value="16">길게 (약 1분 30초)</option>
+      <option value="26">아주 길게 (약 2분 30초)</option>
+    </select>
+  </div>
+  <div class="row">당첨 인원 <input id="n" type="number" min="1" value="1"><button onclick="start()">출발! 🔮</button></div>
+</div>
+
+<div class="panel" id="result" hidden>
+  <h1>🏆 결과 🏆</h1>
+  <div id="rankList" style="width:100%"></div>
+  <div class="row"><button onclick="start()">같은 명단으로 다시</button><button onclick="back()">명단 수정</button></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script src="sfx.js"></script>
+<script>
+const {Engine,Bodies,Body,Composite}=Matter;
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const nameList=()=>$('names').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,100);
+const fill=()=>{$('names').value=Array.from({length:clamp(+$('cnt').value||2,2,100)},(_,i)=>(i+1)+'번').join('\n')};
+
+const W=900;                 // 코스 폭
+const GRAV=.001,H=1000/120; // 중력 세기 / 물리 고정 시간 간격(ms)
+const MAXV=14;               // 구슬 최대 속도(터널링 방지)
+const cv=$('cv'),ctx=cv.getContext('2d');
+let dpr=1,CW=0,CH=0;
+function resize(){dpr=Math.min(devicePixelRatio||1,2);CW=innerWidth;CH=innerHeight;cv.width=CW*dpr;cv.height=CH*dpr}
+addEventListener('resize',resize);resize();
+
+// ── 월드 ──
+let engine,marbles=[],movers=[],zones=[],done=[],confetti=[];
+let running=false,runId=0,raf=0,simT=0,finishY=0,botY=0,trayH=0,gate=null,camTop=0,total=0;
+let mouthY=0,slowEnd=0,finX0=0,finX1=W,sf=1,slowShown=false; // sf: 시간 배율(1=보통, 낮을수록 슬로우모션)
+
+// OX: 지금 만드는 구간의 가로 위치. 구간 코드는 0~W 기준 좌표로 쓰고 헬퍼가 OX를 더해 줌 (코스가 좌우로 굽이치게)
+let OX=0,startX=0,camX=0,stepN=0;
+const weakBars=[],debris=[]; // 초록 막대(5개 이상 올라가면 무너짐), 무너져 떨어지는 조각
+const RANGE=600,WALLC='#473a8c';
+const add=(b,tint)=>{b.tint=tint;Composite.add(engine.world,b);return b};
+const rect=(x,y,w,h,a=0,tint='#8e7cc3',o={})=>add(Bodies.rectangle(x+OX,y,w,h,{isStatic:true,angle:a,friction:.05,frictionStatic:0,restitution:.35,...o}),tint);
+const peg=(x,y,r,tint='#c9b8ff',o={})=>add(Bodies.circle(x+OX,y,r,{isStatic:true,restitution:.6,friction:.02,frictionStatic:0,...o}),tint);
+
+const weak=(b,len)=>{b.weak=true;b.bw=len;weakBars.push(b);return b};
+// 삼각형 벽(코스 폭이 좁아지거나 넓어지는 부분). 빗면 바깥쪽을 채움
+const poly=(pts,tint='#6b5bd2')=>{
+  pts=pts.map(p=>({x:p.x+OX,y:p.y}));
+  const c=Matter.Vertices.centre(pts);
+  return add(Bodies.fromVertices(c.x,c.y,[pts],{isStatic:true,friction:.05,frictionStatic:0,restitution:.35}),tint);
+};
+const wallPair=(y,h)=>{rect(-20,y+h/2,40,h+30,0,WALLC);rect(W+20,y+h/2,40,h+30,0,WALLC)};
+// 폭 wd인 비스듬한 통로: x0→x1로 h만큼 내려가며 옆으로 이동 (구불구불/급커브의 재료)
+function channel(x0,x1,y,h,wd){
+  const dx=x1-x0,a=Math.atan2(h,dx),L=Math.hypot(dx,h)+10,nx=Math.sin(a),ny=-Math.cos(a);
+  const mx=(x0+x1)/2,my=y+h/2;
+  rect(mx-nx*20,my-ny*20,L,40,a,WALLC);
+  rect(mx+wd+nx*20,my+ny*20,L,40,a,WALLC);
+}
+// 벽을 타고 내려오는 구슬을 안쪽으로 밀어내는 톱니 (가장자리 구슬이 유리하지 않도록)
+function teeth(y,h){
+  for(let yy=y+50;yy<y+h-60;yy+=110){
+    poly([{x:0,y:yy},{x:36,y:yy+26},{x:0,y:yy+26}],'#7a6bd9');
+    poly([{x:W,y:yy+55},{x:W-36,y:yy+81},{x:W,y:yy+81}],'#7a6bd9');
+  }
+}
+// 구간(장애물 모음). 각 함수는 y0에서 시작해 구간 높이를 반환
+const SEC={
+  snake(y){ // 좁은 통로 안에서 경사판이 번갈아 달려 좌우로 구불구불 내려감 (뱀길)
+    const c=420,ins=(W-c)/2,TH=200,n=5,step=260,L=c*.78,y2=y+TH+n*step;
+    poly([{x:0,y},{x:ins,y:y+TH},{x:0,y:y+TH}]);poly([{x:W,y},{x:W-ins,y:y+TH},{x:W,y:y+TH}]);
+    rect(ins/2,(y+TH+y2)/2,ins,y2-y-TH,0,WALLC);rect(W-ins/2,(y+TH+y2)/2,ins,y2-y-TH,0,WALLC);
+    for(let i=0;i<n;i++){ // 반대쪽에 80칸 이상 틈을 남겨 끼지 않게
+      const l=i%2==0;weak(rect(l?ins+L/2:W-ins-L/2,y+TH+40+i*step,L,16,l?.4:-.4,'#5fd3a7'),L);
+    }
+    poly([{x:0,y:y2},{x:ins,y:y2},{x:0,y:y2+TH}]);poly([{x:W,y:y2},{x:W-ins,y:y2},{x:W,y:y2+TH}]);
+    return TH+n*step+TH+40;
+  },
+  narrow(y){ // 길이 갑자기 좁아졌다가 다시 넓어짐 (가운데 느린 막대가 휘저음)
+    const w=rnd(420,480),ins=(W-w)/2,TH=200,CL=480,y2=y+TH+CL; // 통로 폭을 넓혀 회전 막대를 2배로 길게(w-60)
+    poly([{x:0,y},{x:ins,y:y+TH},{x:0,y:y+TH}]);poly([{x:W,y},{x:W-ins,y:y+TH},{x:W,y:y+TH}]);
+    rect(ins/2,y+TH+CL/2,ins,CL,0,'#6b5bd2');rect(W-ins/2,y+TH+CL/2,ins,CL,0,'#6b5bd2');
+    poly([{x:0,y:y2},{x:ins,y:y2},{x:0,y:y2+TH}]);poly([{x:W,y:y2},{x:W-ins,y:y2},{x:W,y:y2+TH}]);
+    // 일자 막대: 가로로 누우면 양옆 30칸 틈만 남아 막고, 세워지면 지나갈 수 있음 (돌아가는 범위 안에 못이 없도록 비움)
+    const bar=rect(W/2,y+TH+CL/2,w-60,14,0,'#ffa94d');
+    movers.push({b:bar,k:'spin',w:(Math.random()<.5?1:-1)*rnd(1.3,2),ph:rnd(0,6)});
+    return 2*TH+CL+40;
+  },
+  pegs(y){ // 못판: 지그재그로 튕김
+    // 벽 톱니(안쪽 36칸)와 못 사이 틈이 구슬 지름의 2배 이상 되도록 양쪽 130칸은 비움
+    for(let i=0;i<7;i++)for(let x=i%2?185:130;x<=W-130;x+=110)peg(x,y+60+i*90,9);
+    return 7*90+120;
+  },
+  zigzag(y){ // 번갈아 달린 경사 막대: 좌우로 미끄러짐
+    // 각도를 23도로 기울이고, 막대끼리 교차하지 않도록 길이를 줄이고 간격(300)을 넓힘
+    const L=W*.62;
+    for(let i=0;i<4;i++){const l=i%2==0;weak(rect(l?L/2+5:W-L/2-5,y+80+i*300,L,16,l?.4:-.4,'#5fd3a7'),L)}
+    return 4*300+240;
+  },
+  windmill(y){ // 돌아가는 십자 풍차: 팔 길이 500 (이전의 2배). 두 개가 위아래로 엇갈려 돌고, 도는 원끼리 닿지 않음
+    [[.43,0],[.57,540]].forEach(([fx,dy],i)=>{
+      const x=W*fx+OX,yy=y+260+dy;
+      const b=Body.create({parts:[Bodies.rectangle(x,yy,500,18),Bodies.rectangle(x,yy,18,500)],friction:.05,frictionStatic:0,restitution:.4});
+      Body.setStatic(b,true);add(b,'#ffa94d');
+      movers.push({b,k:'spin',w:(i%2?1:-1)*rnd(.8,1.3),ph:rnd(0,6)});
+    });
+    return 540+260+260+40;
+  },
+  bumpers(y){ // 통통 튀는 범퍼
+    const ps=[];
+    for(let tries=0;ps.length<12&&tries<200;tries++){
+      const p={x:rnd(140,W-140),y:rnd(60,640)}; // 벽 톱니와 충분히 떨어뜨림
+      if(ps.every(q=>Math.hypot(q.x-p.x,q.y-p.y)>150))ps.push(p);
+    }
+    ps.forEach(p=>peg(p.x,y+p.y,26,'#ff4d8d',{restitution:1.3}));
+    return 740;
+  },
+  sliders(y){ // 좌우로 왔다 갔다 하는 바
+    for(let i=0;i<4;i++){
+      const b=rect(W/2,y+90+i*150,300,18,0,'#4dabf7');
+      movers.push({b,k:'slide',cx:W/2+OX,y:y+90+i*150,amp:(W-300)/2-130,sp:rnd(.8,1.5),ph:rnd(0,6)});
+    }
+    return 4*150+100;
+  },
+  bouncers(y){ // 반발력이 엄청 큰 가로 막대가 좌우로 왔다갔다: 떨어지면 위로 튕겨 올라가 순서가 뒤집힘
+    for(let i=0;i<4;i++){
+      const yy=y+110+i*230,b=rect(W/2,yy,260,18,0,'#d946ef',{restitution:1.25});
+      b.bouncy=true;
+      movers.push({b,k:'slide',cx:W/2+OX,y:yy,amp:(W-260)/2-70,sp:rnd(1,1.8),ph:rnd(0,6)});
+    }
+    return 4*230+140;
+  },
+  funnel(y){ // 깔때기: 좁은 문으로 몰렸다가 쏟아짐
+    const a=.5,L=W*.42,g=60,ex=W/2-g,ey=y+230;
+    rect(ex-Math.cos(a)*L/2,ey-Math.sin(a)*L/2,L,16,a,'#f06595');
+    rect(W-ex+Math.cos(a)*L/2,ey-Math.sin(a)*L/2,L,16,-a,'#f06595');
+    for(let i=0;i<2;i++)for(let x=i?190:130;x<=W-130;x+=120)peg(x,y+320+i*60,9);
+    return 480;
+  },
+  flippers(y){ // 벽에서 휘두르는 플리퍼
+    // 길이 600(코스 폭의 2/3). 좌우 플리퍼가 서로 겹쳐 교차하지 않도록 개수를 3개, 간격을 480으로 넓히고 휘두르는 폭을 줄임
+    for(let i=0;i<3;i++){
+      const l=i%2==0;
+      movers.push({k:'flap',b:rect(0,0,600,16,0,'#ffd43b'),px:(l?10:W-10)+OX,py:y+90+i*480,len:600,base:l?.3:Math.PI-.3,amp:.4,sp:rnd(1.2,2),ph:rnd(0,6)});
+    }
+    return 3*480+250;
+  },
+  chutes(y){ // 칸막이 + 랜덤 방향 튕김판
+    // 구슬 지름이 최대 64라서 칸을 5개(칸 폭 180)로 넓히고, 튕김판은 칸막이 끝(y+260)에서 구슬 지름 이상 아래(y+340)에 둠
+    // → 구슬이 칸막이 사이에 낀 채 튕김판 위에 걸리는 일이 없음
+    const n=5,w=W/n;
+    for(let i=1;i<n;i++)rect(i*w,y+130,12,260,0,'#9775fa');
+    for(let i=0;i<n;i++)rect(i*w+w/2,y+340,w*.45,10,(Math.random()<.5?-1:1)*rnd(.25,.4),'#74c0fc');
+    return 500;
+  },
+};
+function addZone(y){ // 가속 패드 / 끈끈이
+  const k=Math.random()<.5?'boost':'goo',w=rnd(280,420);
+  zones.push({k,x:OX+rnd(0,W-w),y,w,h:90});
+}
+// 마지막: 큰 깔때기 → 작은 입구를 도는 막대가 막고 있음 (시계/반시계 랜덤)
+// 깔때기 → 십자 막대가 도는 목(폭 300) → 좁아짐 → 폭 90의 긴 통로 → 결승선
+function finalSection(y){
+  const TH=240,A=408,N=(A+60)/2,cy=y+TH+215,cy2=cy+450,y2=cy2+A/2+60,y3=y2+200,m=60,len=700; // A: 십자 팔 길이, 목 폭=A+60 (가로로 누워도 양옆 30칸 틈), 두 십자의 도는 원은 40칸 이상 떨어짐
+  poly([{x:0,y},{x:W/2-N,y:y+TH},{x:0,y:y+TH}]);poly([{x:W,y},{x:W/2+N,y:y+TH},{x:W,y:y+TH}]);
+  rect((W/2-N)/2,(y+TH+y3)/2,W/2-N,y3-y-TH,0,'#6b5bd2');rect(W-(W/2-N)/2,(y+TH+y3)/2,W/2-N,y3-y-TH,0,'#6b5bd2');
+  // 빨간 십자 막대 2개 (팔 길이 408 < 목 폭 468), 회전 속도 3.6 rad/s: 위쪽은 시계/반시계 랜덤, 아래쪽은 반대로 돎.
+  // 가로로 누우면 양옆 30칸 틈만 남아 막고, 비스듬하면 지나갈 수 있음. 두 십자의 도는 원은 40칸 떨어져 닿지 않음
+  const dir=Math.random()<.5?1:-1;
+  [[cy,dir*3.6],[cy2,-dir*3.6]].forEach(([yy,w])=>{
+    const cross=Body.create({parts:[Bodies.rectangle(W/2+OX,yy,A,16),Bodies.rectangle(W/2+OX,yy,16,A)],friction:.05,frictionStatic:0,restitution:.4});
+    Body.setStatic(cross,true);add(cross,'#ff3d81');
+    movers.push({b:cross,k:'spin',w,ph:0});
+  });
+  poly([{x:W/2-N,y:y2},{x:W/2-m,y:y3},{x:W/2-N,y:y3}]);poly([{x:W/2+N,y:y2},{x:W/2+m,y:y3},{x:W/2+N,y:y3}]);
+  rect((W/2-m)/2,y3+len/2,W/2-m,len,0,'#6b5bd2');rect(W-(W/2-m)/2,y3+len/2,W/2-m,len,0,'#6b5bd2');
+  mouthY=cy2;slowEnd=y3+120;finishY=y3+560;finX0=OX+W/2-m;finX1=OX+W/2+m; // 슬로우모션은 두 번째(마지막) 십자 앞에서부터
+  wallPair(y,y3+len-y);
+}
+// 구간 사이를 잇는 굽이: 완만한 곡선(옆으로 조금) 또는 급커브(짧은 높이에 옆으로 확 이동)
+function connect(y){
+  const sharp=Math.random()<.35;
+  const mag=sharp?rnd(450,RANGE):rnd(120,260),h=sharp?rnd(170,230):rnd(260,340);
+  let dir=OX<RANGE/2?1:-1;if(Math.random()<.25)dir=-dir;
+  const nx=clamp(OX+dir*mag,0,RANGE);
+  const o=OX;OX=0;channel(o,nx,y,h,W);OX=nx; // 통로는 절대 좌표로
+  return h;
+}
+function buildCourse(count){
+  let y=80,last='';
+  const names=Object.keys(SEC).filter(k=>k!='narrow'&&k!='snake');
+  for(let i=0;i<count;i++){
+    let k;
+    if(i%5==2)k='narrow';       // 5구간마다 좁은 길
+    else if(i%5==4)k='snake';   // 구불구불 뱀길
+    else do k=names[Math.random()*names.length|0];while(k==last);
+    last=k;
+    const h=SEC[k](y);wallPair(y,h);if(k!='narrow'&&k!='snake')teeth(y,h);
+    y+=h;
+    if(Math.random()<.6){wallPair(y,120);addZone(y+10);y+=120}
+    y+=connect(y);
+  }
+  finalSection(y);botY=finishY+500;
+}
+
+// ── 구슬 ──
+const color=i=>`hsl(${(i*137.5)%360} 85% 58%)`;
+function spawn(names,ox0){
+  const n=names.length,r=n<=20?32:n<=50?26:20; // 구슬 반지름 (이전의 2배)
+  const cell=2*r+3,cols=Math.floor((W-30)/cell),rows=Math.ceil(n/cols);
+  trayH=rows*cell+80;
+  const order=names.map((_,i)=>i).sort(()=>Math.random()-.5); // 시작 위치 랜덤 → 공정
+  marbles=names.map((nm,i)=>{
+    const slot=order[i],col=slot%cols,row=slot/cols|0;
+    const b=Bodies.circle(ox0+15+cell/2+col*cell+rnd(-1,1),-(r+3)-row*cell,r,{restitution:.45,friction:.01,frictionStatic:0,frictionAir:.008,density:.002,label:'m'});
+    Composite.add(engine.world,b);
+    return{name:nm,b,r,c:color(i),i,still:0,fin:false};
+  });
+}
+
+// ── 시작/중단/종료 ──
+function back(){$('result').hidden=true;$('setup').hidden=false}
+function abort(){
+  runId++;running=false;cancelAnimationFrame(raf);sfx.bgm(false);sfx.slow(false);
+  $('count').style.display='none';$('stopBtn').hidden=true;$('rank').hidden=true;$('feed').textContent='';
+  $('setup').hidden=false;
+}
+async function start(){
+  document.documentElement.classList.remove('auto');
+  const names=nameList();
+  if(names.length<2)return alert('이름을 2명 이상 입력하세요');
+  const id=++runId;
+  sfx.init();sfx.bgm(false);sfx.slow(false); // 버튼 클릭 직후에 오디오를 켜야 브라우저가 허용함
+  cancelAnimationFrame(raf);
+  $('setup').hidden=$('result').hidden=true;$('stopBtn').hidden=false;$('feed').textContent='';
+  engine=Engine.create({positionIterations:8,velocityIterations:6});
+  engine.gravity.y=1;engine.gravity.scale=GRAV;
+  Matter.Events.on(engine,'collisionStart',onHit);
+  weakBars.length=0;debris.length=0;stepN=0;
+  movers=[];zones=[];done=[];confetti=[];running=false;simT=0;total=names.length;sf=1;slowShown=false;wasSlow=false;
+  OX=startX=rnd(0,RANGE);camX=startX+W/2;
+  spawn(names,startX);
+  wallPair(-trayH-600,trayH+680);                             // 출발 상자 좌우 벽
+  gate=rect(W/2,15,W+40,30,0,'#aaa');                         // 출발 문
+  buildCourse(+$('len').value);                               // (OX는 코스를 따라 바뀜)
+  rect(W/2,botY,W+80,40,0,WALLC);                             // 바닥
+  camTop=-visH()+140;
+  let last=performance.now(),acc=0;
+  const tick=now=>{
+    acc+=Math.min(50,now-last);last=now;
+    for(let n=0;acc>=H&&n<4;n++,acc-=H)stepPhys();
+    if(acc>=H)acc=0;
+    draw();
+    raf=requestAnimationFrame(tick);
+  };
+  raf=requestAnimationFrame(tick);
+  const c=$('count');c.style.display='flex';
+  for(const s of['3','2','1','GO!']){c.textContent=s;sfx.play(s=='GO!'?'go':'tick');await sleep(800);if(id!==runId)return}
+  c.style.display='none';
+  Composite.remove(engine.world,gate); // 문이 열리며 와르르
+  sfx.play('gate');sfx.bgm(true);
+  running=true;$('rank').hidden=false;
+}
+async function end(){
+  const id=runId;running=false;
+  sfx.bgm(false);sfx.slow(false);
+  await sleep(2200);
+  if(id!==runId)return;
+  $('stopBtn').hidden=true;$('rank').hidden=true;sfx.play('fanfare');
+  const k=Math.max(1,+$('n').value||1);
+  $('rankList').innerHTML=done.slice(0,Math.max(k,3)).map((m,i)=>
+    `<div class="win ${i<k?'top':''}"><span>${['🥇','🥈','🥉'][i]||i+1}</span><span>${esc(m.name)}</span>${i<k?'<b>🎉 당첨!</b>':''}</div>`).join('');
+  $('result').hidden=false;
+}
+
+// ── 효과음: 화면에 보이는 구슬의 충돌만 소리를 냄 (구슬이 많아도 소음이 되지 않게) ──
+let wasSlow=false;
+const visible=p=>p.y>camTop-100&&p.y<camTop+CH/scale()+100;
+function onHit(e){
+  for(const p of e.pairs){
+    const a=p.bodyA,b=p.bodyB,m=a.label=='m'?a:b.label=='m'?b:null;
+    if(!m)continue;
+    const o=m===a?b:a,sp=Math.hypot(m.velocity.x,m.velocity.y);
+    if(sp<1.5||!visible(m.position))continue;
+    if(o.tint=='#ff4d8d'||o.bouncy)sfx.play('boing',.8);                         // 범퍼
+    else if(o.isStatic)sfx.play('tickpeg',clamp(sp/MAXV,0,1));        // 못/막대: 세게 부딪힐수록 높은 음
+  }
+}
+// 초록 막대: 위에 구슬이 5개 이상 올라가면 무너져 떨어짐 (4개부터는 붉게 변해 경고)
+function collapse(b){
+  b.broken=true;Composite.remove(engine.world,b);
+  const d=Bodies.rectangle(b.position.x,b.position.y,b.bw,16,{angle:b.angle,collisionFilter:{mask:0}}); // 아무것과도 부딪히지 않고 떨어지기만 함
+  d.tint='#ff9f80';Composite.add(engine.world,d);
+  Body.setAngularVelocity(d,rnd(-.04,.04));Body.setVelocity(d,{x:rnd(-1,1),y:0});
+  debris.push({b:d,t:2.5});
+  for(let i=0;i<26;i++){
+    const s=rnd(-.5,.5)*b.bw;
+    confetti.push({x:b.position.x+Math.cos(b.angle)*s,y:b.position.y+Math.sin(b.angle)*s,vx:rnd(-3,3),vy:rnd(-7,0),c:`hsl(${rnd(110,170)} 70% 55%)`,l:1});
+  }
+  if(visible(b.position)){sfx.play('crack');$('feed').textContent='💥 초록 막대가 무너졌다!'}
+}
+function checkWeak(){
+  for(const b of weakBars){
+    if(b.broken)continue;
+    const ca=Math.cos(b.angle),sa=Math.sin(b.angle);
+    let n=0;
+    for(const m of marbles){
+      if(m.fin)continue;
+      const dx=m.b.position.x-b.position.x,dy=m.b.position.y-b.position.y;
+      if(Math.abs(dx)>b.bw*.55||Math.abs(dy)>b.bw*.3)continue;
+      const lx=dx*ca+dy*sa,ly=-dx*sa+dy*ca; // 막대 기준 좌표 (ly<0 이면 막대 위쪽)
+      if(Math.abs(lx)<b.bw/2+m.r*.5&&ly<0&&-ly<8+m.r+8)n++;
+    }
+    b.tint=n>=4?'#ff9f80':'#5fd3a7';
+    if(n>=5)collapse(b);
+  }
+}
+// ── 물리 한 스텝 ──
+function stepPhys(){
+  if(running){
+    simT+=H/1000*sf;
+    for(const m of movers){ // 움직이는 장애물은 직접 위치/각도를 지정
+      if(m.k=='spin')Body.setAngle(m.b,m.w*simT+m.ph);
+      else if(m.k=='slide')Body.setPosition(m.b,{x:m.cx+Math.sin(simT*m.sp+m.ph)*m.amp,y:m.y});
+      else{const a=m.base+Math.sin(simT*m.sp+m.ph)*m.amp*(m.px<W/2?1:-1);
+        Body.setAngle(m.b,a);Body.setPosition(m.b,{x:m.px+Math.cos(a)*m.len/2,y:m.py+Math.sin(a)*m.len/2})}
+    }
+  }
+  engine.timing.timeScale=sf;
+  Engine.update(engine,H);
+  if(running){
+    if(++stepN%4==0)checkWeak(); // 4스텝마다 한 번만 검사
+    for(let i=debris.length-1;i>=0;i--){
+      if((debris[i].t-=H/1000)<=0){Composite.remove(engine.world,debris[i].b);debris.splice(i,1)}
+    }
+  }
+  let lead=-1e9;
+  for(const m of marbles){
+    if(m.fin)continue;
+    const b=m.b;
+    if(b.position.y>lead)lead=b.position.y;
+    let inZ=null;
+    for(const z of zones){
+      if(b.position.x>z.x&&b.position.x<z.x+z.w&&b.position.y>z.y&&b.position.y<z.y+z.h){
+        inZ=z.k;
+        if(z.k=='boost')Body.setVelocity(b,{x:b.velocity.x,y:Math.min(b.velocity.y+.5,MAXV)});
+        else Body.setVelocity(b,{x:b.velocity.x*.9,y:b.velocity.y*.9});
+      }
+    }
+    if(inZ&&!m.zk&&visible(b.position))sfx.play(inZ=='boost'?'mushroom':'squelch',.5); // 구역에 들어설 때 한 번
+    m.zk=inZ;
+    const sp=Math.hypot(b.velocity.x,b.velocity.y);
+    if(sp>MAXV)Body.setVelocity(b,{x:b.velocity.x*MAXV/sp,y:b.velocity.y*MAXV/sp});
+    if(running){ // 어딘가에 끼어 멈춘 구슬은 살짝 튕겨 줌
+      m.still=sp<.4?m.still+H/1000:0;
+      if(m.still>1.8){Body.setVelocity(b,{x:rnd(-4,4),y:-3});m.still=0}
+      if(b.position.y>finishY){
+        m.fin=true;done.push(m);Composite.remove(engine.world,b);
+        for(let i=0;i<30;i++)confetti.push({x:b.position.x,y:finishY,vx:rnd(-4,4),vy:rnd(-9,-2),c:`hsl(${rnd(0,360)} 90% 60%)`,l:1.2});
+        if(done.length==1)$('feed').textContent=`🏁 ${m.name} 1등 도착!`;
+        sfx.play(done.length==1?'finish':'ding',done.length==1?1:.6);
+      }
+    }
+  }
+  // 선두가 마지막 입구에 다가가면 당첨자가 가려질 때까지 슬로우모션
+  const want=Math.max(+$('n').value||1,1);
+  const slow=running&&lead>mouthY-320&&lead<slowEnd&&done.length<want; // 십자 막대 앞~긴 통로 입구까지만 슬로우
+  if(slow&&!slowShown){slowShown=true;$('feed').textContent='🐌 슬로우모션! 입구를 통과할 수 있을까?'}
+  if(slow!==wasSlow){wasSlow=slow;sfx.slow(slow);if(slow)sfx.play('alert')} // 슬로우모션: 리듬이 심장 박동으로
+  if(running&&!slow)sfx.bpm(128+32*clamp(lead/finishY,0,1));              // 결승이 가까울수록 빨라지는 리듬
+  sf+=((slow?.25:1)-sf)*.08;
+  if(running&&(done.length>=marbles.length||done.length>=Math.max(want,3)))end();
+}
+
+// ── 그리기 ──
+const visH=()=>CH/scale();
+const scale=()=>Math.min(CW/(W+100),1.3);
+let lastRank=0;
+function draw(){
+  const s=scale()*(1+(1-sf)*.3),vh=CH/s; // 슬로우모션 땐 살짝 확대
+  const alive=marbles.filter(m=>!m.fin).sort((a,b)=>b.b.position.y-a.b.position.y);
+  const leadY=alive.length?alive[0].b.position.y:finishY;
+  const target=running||done.length?clamp(leadY-vh*.4,-vh+140,botY-vh):-vh+140;
+  camTop+=(target-camTop)*.08;
+  const tx0=running||done.length?(alive.length?alive[0].b.position.x:(finX0+finX1)/2):startX+W/2;
+  camX+=(tx0-camX)*.08;                 // 코스가 옆으로 굽이치므로 가로도 선두를 따라감
+  const tx=CW/s/2-camX;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const g=ctx.createLinearGradient(0,0,0,CH);g.addColorStop(0,'#2b1b66');g.addColorStop(1,'#10092e');
+  ctx.fillStyle=g;ctx.fillRect(0,0,CW,CH);
+  ctx.setTransform(dpr*s,0,0,dpr*s,dpr*s*tx,-dpr*s*camTop);
+  // 거리 감각용 가로 줄
+  ctx.strokeStyle='#ffffff10';ctx.lineWidth=2;
+  for(let y=Math.floor(camTop/200)*200;y<camTop+vh;y+=200){ctx.beginPath();ctx.moveTo(camX-CW/s,y);ctx.lineTo(camX+CW/s,y);ctx.stroke()}
+  // 가속/끈끈이 구역
+  for(const z of zones){
+    if(z.y>camTop+vh||z.y+z.h<camTop)continue;
+    ctx.fillStyle=z.k=='boost'?'#ffd43b44':'#51cf6644';ctx.fillRect(z.x,z.y,z.w,z.h);
+    ctx.fillStyle=z.k=='boost'?'#ffd43b':'#51cf66';ctx.font='bold 40px sans-serif';ctx.textAlign='center';
+    const sym=z.k=='boost'?'⏬':'🫧';
+    for(let x=z.x+30;x<z.x+z.w;x+=60)ctx.fillText(sym,x,z.y+h2(z));
+  }
+  // 장애물
+  for(const b of Composite.allBodies(engine.world)){
+    if(!b.tint||b.bounds.max.y<camTop||b.bounds.min.y>camTop+vh)continue;
+    ctx.fillStyle=b.tint;ctx.shadowColor='#ff5cf5';ctx.shadowBlur=b.bouncy?18:0; // 반발 막대는 빛남
+    for(const p of (b.parts.length>1?b.parts.slice(1):[b])){
+      ctx.beginPath();
+      if(p.circleRadius)ctx.arc(p.position.x,p.position.y,p.circleRadius,0,7);
+      else{ctx.moveTo(p.vertices[0].x,p.vertices[0].y);for(const v of p.vertices)ctx.lineTo(v.x,v.y);ctx.closePath()}
+      ctx.fill();
+    }
+  }
+  ctx.shadowBlur=0;
+  // 결승선
+  ctx.fillStyle='#fff';ctx.fillRect(finX0,finishY,finX1-finX0,6);
+  for(let x=finX0,i=0;x<finX1;x+=15,i++){ctx.fillStyle=i%2?'#000':'#fff';ctx.fillRect(x,finishY-14,15,14)}
+  ctx.fillStyle='#ffd43b';ctx.font='bold 36px sans-serif';ctx.textAlign='center';ctx.fillText('🏁 F I N I S H 🏁',(finX0+finX1)/2,finishY+50);
+  // 구슬
+  const showAll=marbles.length<=40,top=new Set(alive.slice(0,10));
+  ctx.textAlign='center';ctx.lineJoin='round';
+  for(const m of alive){
+    const p=m.b.position;
+    if(p.y<camTop-40||p.y>camTop+vh+40)continue;
+    ctx.fillStyle=m.c;ctx.beginPath();ctx.arc(p.x,p.y,m.r,0,7);ctx.fill();
+    ctx.strokeStyle='#fff8';ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle='#fff6';ctx.beginPath();ctx.arc(p.x-m.r*.3,p.y-m.r*.3,m.r*.28,0,7);ctx.fill();
+    if(showAll||top.has(m)){
+      ctx.font=`bold ${Math.max(12,m.r)}px sans-serif`;
+      ctx.strokeStyle='#000c';ctx.lineWidth=4;ctx.strokeText(m.name,p.x,p.y-m.r-5);
+      ctx.fillStyle='#fff';ctx.fillText(m.name,p.x,p.y-m.r-5);
+    }
+  }
+  // 꽃가루
+  for(let i=confetti.length-1;i>=0;i--){
+    const c=confetti[i];c.l-=.016;c.vy+=.35;c.x+=c.vx;c.y+=c.vy;
+    if(c.l<=0){confetti.splice(i,1);continue}
+    ctx.globalAlpha=Math.min(1,c.l);ctx.fillStyle=c.c;ctx.fillRect(c.x,c.y,8,8);ctx.globalAlpha=1;
+  }
+  // 화면 고정 요소: 진행 바 + 실시간 순위
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  if(sf<.9){ // 슬로우모션 비네팅
+    const v=ctx.createRadialGradient(CW/2,CH/2,CH*.3,CW/2,CH/2,CH*.9);
+    v.addColorStop(0,'#0000');v.addColorStop(1,`rgba(255,40,100,${(1-sf)*.55})`);
+    ctx.fillStyle=v;ctx.fillRect(0,0,CW,CH);
+  }
+  const x0=16,y0=70,y1=CH-40;
+  ctx.fillStyle='#0008';ctx.fillRect(x0-6,y0-10,18,y1-y0+20);
+  for(const m of marbles){
+    const q=m.fin?1:clamp(m.b.position.y/finishY,0,1);
+    ctx.fillStyle=m.c;ctx.beginPath();ctx.arc(x0+3,y0+q*(y1-y0),total>40?3:5,0,7);ctx.fill();
+  }
+  if(performance.now()-lastRank>200){
+    lastRank=performance.now();
+    const list=[...done,...alive].slice(0,8);
+    $('rank').innerHTML=list.map((m,i)=>`<div>${i+1}. <span style="color:${m.c}">●</span> ${esc(m.name)}${m.fin?' 🏁':''}</div>`).join('');
+  }
+}
+const h2=z=>60;
+// 선택 페이지(random-pick.html)에서 넘겨준 설정으로 바로 시작: #names=..&n=..&len=..&auto=1 (그랑프리는 &mode=free|lane 추가)
+(()=>{
+  const q=new URLSearchParams(location.hash.slice(1));
+  if(!q.has('names'))return;
+  $('names').value=q.get('names');
+  
+  if(q.get('len'))$('len').value=q.get('len');
+  if(q.get('n'))$('n').value=q.get('n');
+  
+  if(q.get('auto'))setTimeout(start,300);
+})();
+</script>
+</body>
+</html>

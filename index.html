@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>랜덤 뽑기</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;font-family:system-ui,'Malgun Gothic',sans-serif;color:#fff;background:radial-gradient(circle at 50% 0%,#3b2a8f,#1b1340 60%)}
+#menu{max-width:980px;margin:0 auto;padding:20px 16px 40px;text-align:center}
+h1{font-size:clamp(30px,6vw,56px);margin:10px 0 4px;text-shadow:0 4px 0 #ff3d81}
+.sub{opacity:.8;margin:0 0 18px}
+textarea{width:min(560px,100%);height:190px;border-radius:12px;border:0;padding:12px;font-size:18px}
+.row{display:flex;gap:12px;align-items:center;justify-content:center;margin:12px 0;flex-wrap:wrap;font-size:20px}
+input[type=number]{width:80px;font-size:20px;padding:6px;border-radius:8px;border:0}
+select{font-size:20px;padding:6px;border-radius:8px}
+button{font-size:22px;font-weight:800;padding:12px 30px;border:0;border-radius:40px;background:#ffd23f;color:#3a1f00;cursor:pointer;box-shadow:0 5px 0 #c99a00}
+button.sm{font-size:16px;padding:6px 16px;box-shadow:0 3px 0 #c99a00}
+button:active{transform:translateY(4px);box-shadow:0 1px 0 #c99a00}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:18px 0}
+.card{position:relative;background:#ffffff18;border:3px solid transparent;border-radius:20px;padding:18px 14px;cursor:pointer;transition:.15s}
+.card:hover{background:#ffffff26}
+.card input{position:absolute;opacity:0}
+.card.sel{border-color:#ffd23f;background:#ffd23f26;box-shadow:0 0 0 4px #ffd23f44}
+.card.off{opacity:.35;cursor:not-allowed}
+.card .em{font-size:52px}
+.card b{display:block;font-size:24px;margin:6px 0}
+.card span{font-size:15px;opacity:.85;line-height:1.5;display:block}
+#stage{position:fixed;inset:0;z-index:50;background:#000}
+#stage[hidden]{display:none}
+#stage iframe{width:100%;height:100%;border:0;display:block}
+#home{position:fixed;right:12px;bottom:12px;z-index:60;font-size:16px;padding:8px 18px;background:#ffffffdd;box-shadow:0 3px 0 #0006}
+#home[hidden]{display:none}
+</style>
+</head>
+<body>
+<div id="menu">
+  <h1>🎲 랜덤 뽑기 🎲</h1>
+  <p class="sub">참가자를 입력하고 게임을 골라 뽑기를 시작하세요 (최대 100명)</p>
+
+  <textarea id="names" oninput="sync()">민준
+서연
+지호
+하윤
+도윤
+수아
+예준
+지우</textarea>
+  <div class="row"><span id="cntLb"></span> · 테스트용 <input id="cnt" type="number" min="2" max="100" value="40">명 <button class="sm" onclick="fill()">이름 자동 채우기</button></div>
+
+  <div class="cards" id="cards">
+    <label class="card" data-g="grandprix"><input type="radio" name="g" value="grandprix">
+      <div class="em">🏎️</div><b>랜덤 그랑프리</b>
+      <span>3D 카트 레이스 · 자유 주행<br>구불구불·급커브·언덕, 아이템과 망치, 역전 드라마</span></label>
+    <label class="card" data-g="marble"><input type="radio" name="g" value="marble">
+      <div class="em">🔮</div><b>랜덤 구슬 레이스</b>
+      <span>위에서 아래로 떨어지는 구슬<br>풍차·범퍼·무너지는 막대로 순서가 뒤바뀜</span></label>
+    <label class="card" data-g="lane" id="laneCard"><input type="radio" name="g" value="lane">
+      <div class="em">🛣️</div><b>레인 달리기</b>
+      <span>레인별로 나란히 달리는 3D 레이스<br><u>20명 이하만</u> 가능</span></label>
+  </div>
+
+  <div class="row">코스 길이
+    <select id="len">
+      <option value="0">짧게 (약 30초)</option>
+      <option value="1">보통 (약 1분)</option>
+      <option value="2" selected>길게 (약 1분 30초)</option>
+      <option value="3">아주 길게 (약 2분 30초)</option>
+    </select>
+    당첨 인원 <input id="n" type="number" min="1" value="1">
+  </div>
+  <div class="row"><button onclick="launch()" style="font-size:28px;padding:16px 48px">🎲 뽑기 시작!</button></div>
+</div>
+
+<div id="stage" hidden><iframe id="frame" allow="autoplay"></iframe></div>
+<button id="home" hidden onclick="goHome()">🏠 게임 선택으로</button>
+
+<script>
+const $=id=>document.getElementById(id);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const nameList=()=>$('names').value.split('\n').map(s=>s.trim()).filter(Boolean).slice(0,100);
+const LEN={grandprix:[720,1500,2400,4000],lane:[720,1500,2400,4000],marble:[6,10,16,26]}; // 코스 길이 선택 → 각 게임의 값
+const PAGE={grandprix:'random-race-3d.html',lane:'random-race-3d.html',marble:'random-marble.html'};
+let sel='grandprix';
+try{const v=JSON.parse(localStorage.getItem('pick')||'{}');if(v.names)$('names').value=v.names;if(v.sel)sel=v.sel;if(v.len!=null)$('len').value=v.len;if(v.n)$('n').value=v.n}catch(e){}
+
+const fill=()=>{$('names').value=Array.from({length:clamp(+$('cnt').value||2,2,100)},(_,i)=>(i+1)+'번').join('\n');sync()};
+// 선택 상태 갱신: 21명 이상이면 레인 달리기는 선택 불가
+function sync(){
+  const n=nameList().length,big=n>20;
+  $('cntLb').textContent=`현재 ${n}명`;
+  $('laneCard').classList.toggle('off',big);
+  if(big&&sel=='lane')sel='grandprix';
+  for(const c of document.querySelectorAll('.card')){
+    c.classList.toggle('sel',c.dataset.g==sel);
+    c.querySelector('input').checked=c.dataset.g==sel;
+  }
+}
+$('cards').addEventListener('click',e=>{
+  const c=e.target.closest('.card');if(!c)return;
+  e.preventDefault();
+  if(c.classList.contains('off'))return alert('레인 달리기는 20명 이하만 가능합니다. 다른 게임을 고르거나 인원을 줄여 주세요.');
+  sel=c.dataset.g;sync();
+});
+
+function launch(){
+  const names=nameList();
+  if(names.length<2)return alert('이름을 2명 이상 입력하세요');
+  if(sel=='lane'&&names.length>20)return alert('레인 달리기는 20명 이하만 가능합니다.');
+  try{localStorage.setItem('pick',JSON.stringify({names:$('names').value,sel,len:$('len').value,n:$('n').value}))}catch(e){}
+  const q=new URLSearchParams({names:names.join('\n'),n:String(Math.max(1,+$('n').value||1)),len:String(LEN[sel][+$('len').value]),auto:'1'});
+  if(sel!='marble')q.set('mode',sel=='lane'?'lane':'free');
+  $('frame').src=PAGE[sel]+'#'+q.toString();   // 게임 페이지가 설정을 읽어 바로 시작
+  $('stage').hidden=false;$('home').hidden=false;
+}
+function goHome(){
+  $('frame').src='about:blank'; // 게임(애니메이션·소리)을 완전히 끝냄
+  $('stage').hidden=true;$('home').hidden=true;
+}
+sync();
+</script>
+</body>
+</html>
